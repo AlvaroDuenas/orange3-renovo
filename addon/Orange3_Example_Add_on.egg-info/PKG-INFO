@@ -1,0 +1,22 @@
+Metadata-Version: 2.1
+Name: Orange3-Example-Add-on
+Version: 0.0.3
+Summary: Add-on containing example widgets
+Home-page: http://orange.biolab.si/download
+Author: Bioinformatics Laboratory, FRI UL
+Author-email: contact@orange.biolab.si
+License: BSD
+Keywords: orange3 add-on
+Description-Content-Type: text/markdown
+
+Orange3 Explain
+===============
+
+Short description for the PyPI.
+See [documentation](http://orange3-imageanalytics.readthedocs.org/).
+
+Features
+--------
+#### List of key features
+* Feature 1
+* Feature 2
