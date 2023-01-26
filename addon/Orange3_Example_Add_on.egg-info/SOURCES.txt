@@ -16,6 +16,8 @@ orangecontrib/example/tests/test_example.py
 orangecontrib/example/tutorials/__init__.py
 orangecontrib/example/tutorials/example_tutorial.ows
 orangecontrib/example/widgets/__init__.py
+orangecontrib/example/widgets/mywidget copy.py
 orangecontrib/example/widgets/mywidget.py
 orangecontrib/example/widgets/icons/category.svg
+orangecontrib/example/widgets/icons/folder.svg
 orangecontrib/example/widgets/icons/mywidget.svg
