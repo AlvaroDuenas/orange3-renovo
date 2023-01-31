@@ -81,7 +81,7 @@ if typing.TYPE_CHECKING:
     K = typing.TypeVar("K")
     E = typing.TypeVar("E", bound=enum.Enum)
 
-__all__ = ["OWCSVFileImport"]
+__all__ = ["MyWidget"]
 
 _log = logging.getLogger(__name__)
 
@@ -618,7 +618,7 @@ def default_options_for_mime_type(
 class MyWidget(widget.OWWidget):
     name = "Matlab File Import"
     description = "Import a data table from a Matlab formatted file."
-    icon = "icons/CSVFile.svg"
+    icon = "icons/matlab.svg"
     priority = 11
     category = "Data"
     keywords = ["file", "load", "read", "open", "csv", "matlab"]
@@ -946,7 +946,7 @@ class MyWidget(widget.OWWidget):
             dlg.setWindowModality(Qt.WindowModal)
             mat = scipy.io.loadmat(path)
             mat = {k:v for k, v in mat.items() if k[0] != '_'}
-            data = pd.DataFrame({k: pd.Series(v[0]) for k, v in mat.iteritems()})
+            data = pd.DataFrame({k: pd.Series(v[0]) for k, v in mat.items()})
             path = path.split(".")[:-1] + ".csv"
             data.to_csv(path)
             dlg.setPath(path)
@@ -1061,7 +1061,7 @@ class MyWidget(widget.OWWidget):
     def _note_recent(self, filename, options):
         # store item to local persistent settings
         s = self._local_settings()
-        arr = QSettings_readArray(s, "recent", OWCSVFileImport.SCHEMA)
+        arr = QSettings_readArray(s, "recent", MyWidget.SCHEMA)
         item = {"path": filename}
         if options is not None:
             item["options"] = json.dumps(options.as_dict())
@@ -1247,7 +1247,7 @@ class MyWidget(widget.OWWidget):
         Return items from local history.
         """
         s = self._local_settings()
-        items_ = QSettings_readArray(s, "recent", OWCSVFileImport.SCHEMA)
+        items_ = QSettings_readArray(s, "recent", MyWidget.SCHEMA)
         items = []  # type: List[Tuple[str, Options]]
         for item in items_:
             path = item.get("path", "")
@@ -1861,7 +1861,7 @@ def pandas_to_table(df):
 
 def main(argv=None):  # pragma: no cover
     app = QApplication(argv or [])
-    w = OWCSVFileImport()
+    w = MyWidget()
     w.show()
     w.raise_()
     app.exec()

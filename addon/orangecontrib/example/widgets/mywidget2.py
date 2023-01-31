@@ -42,7 +42,7 @@ class LineEditSelectOnFocus(QLineEdit):
 class MyWidget(widget.OWWidget, RecentPathsWComboMixin):
     name = "Set Workfolder"
     description = "Set the workfolder where the data is going to be saved"
-    icon = "icons/mywidget.svg"
+    icon = "icons/folder.svg"
     priority = 10
     category = "Data"
     keywords = ["folder", "load", "read", "open"]
