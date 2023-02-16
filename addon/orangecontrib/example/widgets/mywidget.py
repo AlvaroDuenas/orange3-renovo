@@ -913,6 +913,11 @@ class MyWidget(widget.OWWidget):
         if status == QFileDialog.Accepted:
             selected_filter = dlg.selectedFileFormat()
             path = dlg.selectedFiles()[0]
+            mat = scipy.io.loadmat(path)
+            mat = {k:v for k, v in mat.items() if k[0] != '_'}
+            data = pd.DataFrame({k: pd.Series(v[0]) for k, v in mat.items()})
+            path = ".".join(path.split(".")[:-1]) + ".csv"
+            data.to_csv(path)
             if prefixname:
                 _prefixpath = self._replacements().get(prefixname, "")
                 if not isprefixed(_prefixpath, path):
@@ -944,11 +949,7 @@ class MyWidget(widget.OWWidget):
             dlg = CSVImportDialog(
                 self, windowTitle="Import Options", sizeGripEnabled=True)
             dlg.setWindowModality(Qt.WindowModal)
-            mat = scipy.io.loadmat(path)
-            mat = {k:v for k, v in mat.items() if k[0] != '_'}
-            data = pd.DataFrame({k: pd.Series(v[0]) for k, v in mat.items()})
-            path = path.split(".")[:-1] + ".csv"
-            data.to_csv(path)
+            
             dlg.setPath(path)
             dlg.setOptions(options)
             status = dlg.exec()
