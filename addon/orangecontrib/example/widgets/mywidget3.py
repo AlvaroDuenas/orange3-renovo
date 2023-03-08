@@ -5,6 +5,7 @@ import Orange.data
 from orangewidget.widget import OWBaseWidget, Input, Output
 from orangewidget.utils.widgetpreview import WidgetPreview
 from orangewidget import gui
+import pandas as pd
 
 class IMZMLImport(widget.OWWidget):
     name = "IMZMLImport"
@@ -15,8 +16,17 @@ class IMZMLImport(widget.OWWidget):
     class Inputs:
         data = Input("Data", Orange.data.Table)
 
-    class Outputs:
-        sample = Output("Sampled Data", Orange.data.Table)
+        class Outputs:
+        data = Output(
+            name="Data",
+            type=Orange.data.Table,
+            doc="Loaded data set.")
+        data_frame = Output(
+            name="Data Frame",
+            type=pd.DataFrame,
+            doc="",
+            auto_summary=False
+        )
 
     want_main_area = False
 
