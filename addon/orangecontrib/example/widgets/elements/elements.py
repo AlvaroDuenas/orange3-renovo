@@ -3,7 +3,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication,
                              QHBoxLayout, QLabel, QWidget, QPushButton, QFileDialog)
-from settings import ParameterGroupList,SpectrumList, ParameterGroup, Spectrum, ConfigIBD
+from elements.settings import ParameterGroupList,SpectrumList, ParameterGroup, Spectrum, ConfigIBD
 from typing import Tuple
 import xml.etree.ElementTree as ET
 from lxml.etree import QName
@@ -85,19 +85,19 @@ class Loader(QWidget):
         settings_IBD = self.get_config_IBD()
         mz_format = self.get_format(settings_IBD.mz_format)
         i_format = self.get_format(settings_IBD.i_format)
-        mz_array_list = []
-        i_array_list = []
+        self.mz_array_list = []
+        self.i_array_list = []
         with open(ibd_filepath, 'rb') as ibd_file:
             for im in self.im_list:
                 ibd_file.seek(int(im[2]))
                 
                 mz_array = np.fromfile(ibd_file,mz_format,int(im[4]))
-                mz_array_list.append(self.fix(mz_array, settings_IBD.max_length_mz_array, mz_format))
+                self.mz_array_list.append(self.fix(mz_array, settings_IBD.max_length_mz_array, mz_format))
                 ibd_file.seek(int(im[6]))
                 i_array = np.fromfile(ibd_file,i_format,int(im[7]))
-                i_array_list.append(self.fix(i_array, settings_IBD.max_length_i_array, i_format))
-        savemat(os.path.join(self.workspace,'mz_array_list.mat'), {'data': np.array(mz_array_list)})
-        savemat(os.path.join(self.workspace,'i_array_list.mat'), {'data': np.array(i_array_list)})
+                self.i_array_list.append(self.fix(i_array, settings_IBD.max_length_i_array, i_format))
+        savemat(os.path.join(self.workspace,'mz_array_list.mat'), {'data': np.array(self.mz_array_list)})
+        savemat(os.path.join(self.workspace,'i_array_list.mat'), {'data': np.array(self.i_array_list)})
 
 
 if __name__ == "__main__":

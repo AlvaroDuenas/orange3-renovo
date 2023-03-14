@@ -81,7 +81,7 @@ if typing.TYPE_CHECKING:
     K = typing.TypeVar("K")
     E = typing.TypeVar("E", bound=enum.Enum)
 
-__all__ = ["MyWidget"]
+__all__ = ["MatlabImport"]
 
 _log = logging.getLogger(__name__)
 
@@ -615,7 +615,7 @@ def default_options_for_mime_type(
         rowspec = []
     return Options(dialect=dialect, encoding=encoding, rowspec=rowspec)
 
-class MyWidget(widget.OWWidget):
+class MatlabImport(widget.OWWidget):
     name = "Matlab File Import"
     description = "Import a data table from a Matlab formatted file."
     icon = "icons/matlab.svg"
@@ -1062,7 +1062,7 @@ class MyWidget(widget.OWWidget):
     def _note_recent(self, filename, options):
         # store item to local persistent settings
         s = self._local_settings()
-        arr = QSettings_readArray(s, "recent", MyWidget.SCHEMA)
+        arr = QSettings_readArray(s, "recent", MatlabImport.SCHEMA)
         item = {"path": filename}
         if options is not None:
             item["options"] = json.dumps(options.as_dict())
@@ -1248,7 +1248,7 @@ class MyWidget(widget.OWWidget):
         Return items from local history.
         """
         s = self._local_settings()
-        items_ = QSettings_readArray(s, "recent", MyWidget.SCHEMA)
+        items_ = QSettings_readArray(s, "recent", MatlabImport.SCHEMA)
         items = []  # type: List[Tuple[str, Options]]
         for item in items_:
             path = item.get("path", "")
@@ -1862,7 +1862,7 @@ def pandas_to_table(df):
 
 def main(argv=None):  # pragma: no cover
     app = QApplication(argv or [])
-    w = MyWidget()
+    w = MatlabImport()
     w.show()
     w.raise_()
     app.exec()
@@ -1874,4 +1874,4 @@ def main(argv=None):  # pragma: no cover
 
 if __name__ == "__main__":
     from Orange.widgets.utils.widgetpreview import WidgetPreview  # since Orange 3.20.0
-    WidgetPreview(MyWidget).run()
+    WidgetPreview(MatlabImport).run()
