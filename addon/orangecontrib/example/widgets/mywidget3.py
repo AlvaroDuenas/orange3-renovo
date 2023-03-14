@@ -431,9 +431,15 @@ class IMZMLImport(widget.OWWidget):
             name="Data",
             type=Orange.data.Table,
             doc="Loaded data set.")
-        data_frame = widget.Output(
-            name="Data Frame",
-            type=pd.DataFrame,
+        mz_array = widget.Output(
+            name="Mz Array",
+            type=Orange.data.Table,
+            doc="",
+            auto_summary=False
+        )
+        i_array = widget.Output(
+            name="I Array",
+            type=Orange.data.Table,
             doc="",
             auto_summary=False
         )
@@ -997,8 +1003,9 @@ class IMZMLImport(widget.OWWidget):
         self.__watcher = None
         self.__clear_running_state()
         print(f.result())
+        table_list = []
+        for df in f.result():
         try:
-            df = f.result()
             assert isinstance(df, pd.DataFrame)
         except pandas.errors.EmptyDataError:
             df = pd.DataFrame({})
@@ -1010,13 +1017,16 @@ class IMZMLImport(widget.OWWidget):
         #TODO
         if df is not None:
             table = pandas_to_table(df)
-            filename = self.current_item(FileFormats).path()
-            table.name = os.path.splitext(os.path.split(filename)[-1])[0]
+            #filename = self.current_item(FileFormats).path()
+            #table.name = os.path.splitext(os.path.split(filename)[-1])[0]
         else:
             table = None
-        self.Outputs.data_frame.send(df)
-        self.Outputs.data.send(table)
-        self._update_status_messages(table)
+        table_list.append(table)
+
+        self.Outputs.data.send(table_list[0])
+        self.Outputs.mz_array.send(table_list[0])
+        self.Outputs.i_array.send(table_list[0])
+        self._update_status_messages(table_list[0])
 
     def _update_status_messages(self, data):
         if data is None:
@@ -1191,8 +1201,7 @@ def load(paths, option_list, progress_callback=None, compatibility_mode=False):
         loader.load_imzml(paths[0])
         loader.load_ibd(paths[1])
         
-        #df = pd.read_csv()
-        return None
+        return loader.imgi_list, loader.mz_array, loader.i_array
 
 
 def guess_types(
