@@ -366,9 +366,9 @@ class BarPlotGraph(PlotWidget):
 
 
 class OWBarPlot(OWWidget):
-    name = "Bar Plot"
+    name = "Spectro Experimento"
     description = "Visualizes comparisons among categorical variables."
-    icon = "icons/BarPlot.svg"
+    icon = "icons/audio-spectrum.svg"
     priority = 190
     keywords = ["chart"]
 
