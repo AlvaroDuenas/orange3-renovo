@@ -374,6 +374,8 @@ class OWBarPlot(OWWidget):
 
     class Inputs:
         data = Input("Data", Table, default=True)
+        i_array = Input("Data", Table, default=True)
+        mz_array = Input("Data", Table, default=True)
         data_subset = Input("Data Subset", Table)
 
     class Outputs:
