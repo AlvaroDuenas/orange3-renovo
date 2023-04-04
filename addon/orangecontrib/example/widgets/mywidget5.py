@@ -1,371 +1,316 @@
-from typing import List, Optional, Tuple, Union, Dict
-from functools import lru_cache
+from itertools import chain
 from xml.sax.saxutils import escape
 
 import numpy as np
+from scipy.stats import linregress
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import r2_score
 
-from AnyQt.QtCore import Qt, QPointF, QSize, Signal, QRectF
-from AnyQt.QtGui import QColor
-from AnyQt.QtWidgets import QApplication, QToolTip, QGraphicsSceneHelpEvent
+from AnyQt.QtCore import Qt, QTimer, QPointF, Signal
+from AnyQt.QtGui import QColor, QFont
+from AnyQt.QtWidgets import QGroupBox, QPushButton
 
 import pyqtgraph as pg
 
-from orangewidget.utils.visual_settings_dlg import VisualSettingsDialog, \
-    KeyType, ValueType
+from orangewidget.utils.combobox import ComboBoxSearch
 
-from Orange.data import Table, DiscreteVariable, ContinuousVariable, \
-    StringVariable, Variable
-from Orange.widgets import gui
-from Orange.widgets.settings import Setting, ContextSetting, \
-    DomainContextHandler, SettingProvider
-from Orange.widgets.utils.annotated_data import create_annotated_table, \
-    ANNOTATED_DATA_SIGNAL_NAME
-from Orange.widgets.utils import instance_tooltip
+from Orange.data import Table, Domain, DiscreteVariable, Variable
+from Orange.data.sql.table import SqlTable, AUTO_DL_LIMIT
+from Orange.preprocess.score import ReliefF, RReliefF
+
+from Orange.widgets import gui, report
+from Orange.widgets.io import MatplotlibFormat, MatplotlibPDFFormat
+from Orange.widgets.settings import (
+    Setting, ContextSetting, SettingProvider, IncompatibleContext)
+from Orange.widgets.utils import get_variable_values_sorted
 from Orange.widgets.utils.itemmodels import DomainModel
-from Orange.widgets.utils.plot import OWPlotGUI, SELECT, PANNING, ZOOMING
-from Orange.widgets.utils.sql import check_sql_input
-from Orange.widgets.visualize.owscatterplotgraph import LegendItem
-from Orange.widgets.visualize.utils.customizableplot import Updater, \
-    CommonParameterSetter
-from Orange.widgets.visualize.utils.plotutils import AxisItem, \
-    HelpEventDelegate, PlotWidget
-from Orange.widgets.widget import OWWidget, Input, Output, Msg
-
-MAX_INSTANCES = 200
+from Orange.widgets.utils.widgetpreview import WidgetPreview
+from Orange.widgets.visualize.owscatterplotgraph import OWScatterPlotBase, \
+    ScatterBaseParameterSetter
+from Orange.widgets.visualize.utils import VizRankDialogAttrPair
+from Orange.widgets.visualize.utils.customizableplot import Updater
+from Orange.widgets.visualize.utils.widget import OWDataProjectionWidget
+from Orange.widgets.widget import AttributeList, Msg, Input, Output
 
 
-class BarPlotViewBox(pg.ViewBox):
-    def __init__(self, parent):
-        super().__init__()
-        self.graph = parent
-        self.setMouseMode(self.RectMode)
-
-    def mouseDragEvent(self, ev, axis=None):
-        if self.graph.state == SELECT and axis is None:
-            ev.accept()
-            if ev.button() == Qt.LeftButton:
-                self.updateScaleBox(ev.buttonDownPos(), ev.pos())
-                if ev.isFinish():
-                    self.rbScaleBox.hide()
-                    p1, p2 = ev.buttonDownPos(ev.button()), ev.pos()
-                    p1 = self.mapToView(p1)
-                    p2 = self.mapToView(p2)
-                    self.graph.select_by_rectangle(QRectF(p1, p2))
-                else:
-                    self.updateScaleBox(ev.buttonDownPos(), ev.pos())
-        elif self.graph.state == ZOOMING or self.graph.state == PANNING:
-            super().mouseDragEvent(ev, axis=axis)
-        else:
-            ev.ignore()
-
-    def mouseClickEvent(self, ev):
-        if ev.button() == Qt.LeftButton:
-            self.graph.select_by_click(self.mapSceneToView(ev.scenePos()))
-            ev.accept()
-
-
-class ParameterSetter(CommonParameterSetter):
-    GRID_LABEL, SHOW_GRID_LABEL = "Gridlines", "Show"
-    DEFAULT_ALPHA_GRID, DEFAULT_SHOW_GRID = 80, True
-    BOTTOM_AXIS_LABEL, GROUP_AXIS_LABEL = "Bottom axis", "Group axis"
-    IS_VERTICAL_LABEL = "Vertical ticks"
+class ScatterPlotVizRank(VizRankDialogAttrPair):
+    captionTitle = "Score Plots"
+    minK = 10
+    attr_color = None
 
     def __init__(self, master):
-        self.grid_settings: Dict = None
-        self.master: BarPlotGraph = master
-        super().__init__()
+        super().__init__(master)
+        self.attr_color = self.master.attr_color
+
+    def initialize(self):
+        self.attr_color = self.master.attr_color
+        super().initialize()
+
+    def check_preconditions(self):
+        self.Information.add_message(
+            "color_required", "Color variable is not selected")
+        self.Information.color_required.clear()
+        if not super().check_preconditions():
+            return False
+        if not self.attr_color:
+            self.Information.color_required()
+            return False
+        return True
+
+    def iterate_states(self, initial_state):
+        # If we put initialization of `self.attrs` to `initialize`,
+        # `score_heuristic` would be run on every call to `set_data`.
+        if initial_state is None:  # on the first call, compute order
+            self.attrs = self.score_heuristic()
+        yield from super().iterate_states(initial_state)
+
+    def compute_score(self, state):
+        # pylint: disable=invalid-unary-operand-type
+        attrs = [self.attrs[i] for i in state]
+        data = self.master.data
+        data = data.transform(Domain(attrs, self.attr_color))
+        data = data[~np.isnan(data.X).any(axis=1) & ~np.isnan(data.Y).T]
+        if len(data) < self.minK:
+            return None
+        n_neighbors = min(self.minK, len(data) - 1)
+        knn = NearestNeighbors(n_neighbors=n_neighbors).fit(data.X)
+        ind = knn.kneighbors(return_distance=False)
+        if data.domain.has_discrete_class:
+            return -np.sum(data.Y[ind] == data.Y.reshape(-1, 1)) / \
+                   n_neighbors / len(data.Y)
+        else:
+            return -r2_score(data.Y, np.mean(data.Y[ind], axis=1)) * \
+                   (len(data.Y) / len(self.master.data))
+
+    def bar_length(self, score):
+        return max(0, -score)
+
+    def score_heuristic(self):
+        assert self.attr_color is not None
+        master_domain = self.master.data.domain
+        vars = [v for v in chain(master_domain.variables, master_domain.metas)
+                if v is not self.attr_color and v.is_primitive()]
+        domain = Domain(attributes=vars, class_vars=self.attr_color)
+        data = self.master.data.transform(domain)
+        relief = ReliefF if isinstance(domain.class_var, DiscreteVariable) \
+            else RReliefF
+        weights = relief(
+            n_iterations=100, k_nearest=self.minK, random_state=0)(data)
+        attrs = sorted(zip(weights, domain.attributes),
+                       key=lambda x: (-x[0], x[1].name))
+        return [a for _, a in attrs]
+
+
+class ParameterSetter(ScatterBaseParameterSetter):
+    DEFAULT_LINE_WIDTH = 3
+    DEFAULT_LINE_ALPHA = 255
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.reg_line_label_font = QFont()
+        self.reg_line_settings = {
+            Updater.WIDTH_LABEL: self.DEFAULT_LINE_WIDTH,
+            Updater.ALPHA_LABEL: self.DEFAULT_LINE_ALPHA,
+            Updater.STYLE_LABEL: Updater.DEFAULT_LINE_STYLE,
+        }
 
     def update_setters(self):
-        self.grid_settings = {
-            Updater.ALPHA_LABEL: self.DEFAULT_ALPHA_GRID,
-            self.SHOW_GRID_LABEL: self.DEFAULT_SHOW_GRID,
+        super().update_setters()
+        self.initial_settings[self.LABELS_BOX].update({
+            self.AXIS_TITLE_LABEL: self.FONT_SETTING,
+            self.AXIS_TICKS_LABEL: self.FONT_SETTING,
+            self.LINE_LAB_LABEL: self.FONT_SETTING
+        })
+        self.initial_settings[self.PLOT_BOX] = {}
+        self.initial_settings[self.PLOT_BOX][self.LINE_LABEL] = {
+            Updater.WIDTH_LABEL: (range(1, 10), self.DEFAULT_LINE_WIDTH),
+            Updater.ALPHA_LABEL: (range(0, 255, 5), self.DEFAULT_LINE_ALPHA),
+            Updater.STYLE_LABEL: (list(Updater.LINE_STYLES),
+                                  Updater.DEFAULT_LINE_STYLE),
         }
 
-        self.initial_settings = {
-            self.LABELS_BOX: {
-                self.FONT_FAMILY_LABEL: self.FONT_FAMILY_SETTING,
-                self.TITLE_LABEL: self.FONT_SETTING,
-                self.AXIS_TITLE_LABEL: self.FONT_SETTING,
-                self.AXIS_TICKS_LABEL: self.FONT_SETTING,
-                self.LEGEND_LABEL: self.FONT_SETTING,
-            },
-            self.ANNOT_BOX: {
-                self.TITLE_LABEL: {self.TITLE_LABEL: ("", "")},
-            },
-            self.PLOT_BOX: {
-                self.GRID_LABEL: {
-                    self.SHOW_GRID_LABEL: (None, True),
-                    Updater.ALPHA_LABEL: (range(0, 255, 5),
-                                          self.DEFAULT_ALPHA_GRID),
-                },
-                self.BOTTOM_AXIS_LABEL: {
-                    self.IS_VERTICAL_LABEL: (None, True),
-                },
-                self.GROUP_AXIS_LABEL: {
-                    self.IS_VERTICAL_LABEL: (None, False),
-                },
-            },
-        }
+        def update_lines(**settings):
+            self.reg_line_settings.update(**settings)
+            Updater.update_inf_lines(self.reg_line_items,
+                                     **self.reg_line_settings)
+            self.master.update_reg_line_label_colors()
 
-        def update_grid(**settings):
-            self.grid_settings.update(**settings)
-            self.master.showGrid(y=self.grid_settings[self.SHOW_GRID_LABEL],
-                          alpha=self.grid_settings[Updater.ALPHA_LABEL] / 255)
+        def update_line_label(**settings):
+            self.reg_line_label_font = \
+                Updater.change_font(self.reg_line_label_font, settings)
+            Updater.update_label_font(self.reg_line_label_items,
+                                      self.reg_line_label_font)
 
-        def update_bottom_axis(**settings):
-            axis = self.master.getAxis("bottom")
-            axis.setRotateTicks(settings[self.IS_VERTICAL_LABEL])
-
-        def update_group_axis(**settings):
-            axis = self.master.group_axis
-            axis.setRotateTicks(settings[self.IS_VERTICAL_LABEL])
-
-        self._setters[self.PLOT_BOX] = {
-            self.GRID_LABEL: update_grid,
-            self.BOTTOM_AXIS_LABEL: update_bottom_axis,
-            self.GROUP_AXIS_LABEL: update_group_axis,
-        }
-
-    @property
-    def title_item(self):
-        return self.master.getPlotItem().titleLabel
+        self._setters[self.LABELS_BOX][self.LINE_LAB_LABEL] = update_line_label
+        self._setters[self.PLOT_BOX] = {self.LINE_LABEL: update_lines}
 
     @property
     def axis_items(self):
         return [value["item"] for value in
-                self.master.getPlotItem().axes.values()]
+                self.master.plot_widget.plotItem.axes.values()]
 
     @property
-    def legend_items(self):
-        return self.master.legend.items
+    def reg_line_items(self):
+        return self.master.reg_line_items
+
+    @property
+    def reg_line_label_items(self):
+        return [line.label for line in self.master.reg_line_items
+                if hasattr(line, "label")]
 
 
-class BarPlotGraph(PlotWidget):
-    selection_changed = Signal(list)
-    bar_width = 0.7
+class OWScatterPlotGraph(OWScatterPlotBase):
+    show_reg_line = Setting(False)
+    orthonormal_regression = Setting(False)
+    jitter_continuous = Setting(False)
 
-    def __init__(self, master, parent=None):
-        self.selection = []
-        self.master: OWBarPlot = master
-        self.state: int = SELECT
-        self.bar_item: pg.BarGraphItem = None
-        super().__init__(
-            parent=parent,
-            viewBox=BarPlotViewBox(self),
-            enableMenu=False,
-            axisItems={"bottom": AxisItem(orientation="bottom",
-                                          rotate_ticks=True),
-                       "left": AxisItem(orientation="left")}
-        )
-        self.hideAxis("left")
-        self.hideAxis("bottom")
-        self.getPlotItem().buttonsHidden = True
-        self.getPlotItem().setContentsMargins(10, 0, 0, 10)
-        self.getViewBox().setMouseMode(pg.ViewBox.PanMode)
-
-        self.group_axis = AxisItem("bottom")
-        self.group_axis.hide()
-        self.group_axis.linkToView(self.getViewBox())
-        self.getPlotItem().layout.addItem(self.group_axis, 4, 1)
-
-        self.legend = self._create_legend()
-
-        self.tooltip_delegate = HelpEventDelegate(self.help_event)
-        self.scene().installEventFilter(self.tooltip_delegate)
-
+    def __init__(self, scatter_widget, parent):
+        super().__init__(scatter_widget, parent)
         self.parameter_setter = ParameterSetter(self)
+        self.reg_line_items = []
 
-        self.showGrid(y=self.parameter_setter.DEFAULT_SHOW_GRID,
-                      alpha=self.parameter_setter.DEFAULT_ALPHA_GRID / 255)
+    def clear(self):
+        super().clear()
+        self.reg_line_items.clear()
 
-    def _create_legend(self):
-        legend = LegendItem()
-        legend.setParentItem(self.getViewBox())
-        legend.anchor((1, 0), (1, 0), offset=(-3, 1))
-        legend.hide()
-        return legend
-
-    def update_legend(self):
-        self.legend.clear()
-        self.legend.hide()
-        for color, text in self.master.get_legend_data():
-            dot = pg.ScatterPlotItem(
-                pen=pg.mkPen(color=color),
-                brush=pg.mkBrush(color=color)
-            )
-            self.legend.addItem(dot, escape(text))
-            self.legend.show()
-        Updater.update_legend_font(self.legend.items,
-                                   **self.parameter_setter.legend_settings)
-
-    def reset_graph(self):
-        self.clear()
-        self.update_bars()
+    def update_coordinates(self):
+        super().update_coordinates()
         self.update_axes()
-        self.update_group_lines()
-        self.update_legend()
-        self.reset_view()
+        # Don't update_regression line here: update_coordinates is always
+        # followed by update_point_props, which calls update_colors
 
-    def update_bars(self):
-        if self.bar_item is not None:
-            self.removeItem(self.bar_item)
-            self.bar_item = None
+    def update_colors(self):
+        super().update_colors()
+        self.update_regression_line()
 
-        values = self.master.get_values()
-        if values is None:
-            return
-
-        self.bar_item = pg.BarGraphItem(
-            x=np.arange(len(values)),
-            height=values,
-            width=self.bar_width,
-            pen=pg.mkPen(QColor(Qt.white)),
-            labels=self.master.get_labels(),
-            brushes=self.master.get_colors(),
-        )
-        self.addItem(self.bar_item)
-        self.__select_bars()
+    def jitter_coordinates(self, x, y):
+        def get_span(attr):
+            if attr.is_discrete:
+                # Assuming the maximal jitter size is 10, a span of 4 will
+                # jitter by 4 * 10 / 100 = 0.4, so there will be no overlap
+                return 4
+            elif self.jitter_continuous:
+                return None  # Let _jitter_data determine the span
+            else:
+                return 0  # No jittering
+        span_x = get_span(self.master.attr_x)
+        span_y = get_span(self.master.attr_y)
+        if self.jitter_size == 0 or (span_x == 0 and span_y == 0):
+            return x, y
+        return self._jitter_data(x, y, span_x, span_y)
 
     def update_axes(self):
-        if self.bar_item is not None:
-            self.showAxis("left")
-            self.showAxis("bottom")
-            self.group_axis.show()
+        for axis, var in self.master.get_axes().items():
+            axis_item = self.plot_widget.plotItem.getAxis(axis)
+            if var and var.is_discrete:
+                ticks = [list(enumerate(get_variable_values_sorted(var)))]
+                axis_item.setTicks(ticks)
+            else:
+                axis_item.setTicks(None)
+            use_time = var and var.is_time
+            self.plot_widget.plotItem.getAxis(axis).use_time(use_time)
+            self.plot_widget.setLabel(axis=axis, text=var or "")
+            if not var:
+                self.plot_widget.hideAxis(axis)
 
-            vals_label, group_label, annot_label = self.master.get_axes()
-            self.setLabel(axis="left", text=vals_label)
-            self.setLabel(axis="bottom", text=annot_label)
-            self.group_axis.setLabel(group_label)
+    @staticmethod
+    def _orthonormal_line(x, y, color, width, style=Qt.SolidLine):
+        # https://en.wikipedia.org/wiki/Deming_regression, with δ=0.
+        pen = pg.mkPen(color=color, width=width, style=style)
+        xm = np.mean(x)
+        ym = np.mean(y)
+        sxx, sxy, _, syy = np.cov(x, y, ddof=1).flatten()
 
-            ticks = [list(enumerate(self.master.get_labels()))]
-            self.getAxis('bottom').setTicks(ticks)
-
-            labels = np.array(self.master.get_group_labels())
-            _, indices, counts = \
-                np.unique(labels, return_index=True, return_counts=True)
-            ticks = [[(i + (c - 1) / 2, labels[i]) for i, c in
-                      zip(indices, counts)]]
-            self.group_axis.setTicks(ticks)
-
-            if not group_label:
-                self.group_axis.hide()
-            elif not annot_label:
-                self.hideAxis("bottom")
+        if sxy != 0:  # also covers sxx != 0 and syy != 0
+            slope = (syy - sxx + np.sqrt((syy - sxx) ** 2 + 4 * sxy ** 2)) \
+                    / (2 * sxy)
+            intercept = ym - slope * xm
+            xmin = x.min()
+            return pg.InfiniteLine(
+                QPointF(xmin, xmin * slope + intercept),
+                np.degrees(np.arctan(slope)),
+                pen)
+        elif (sxx == 0) == (syy == 0):  # both zero or non-zero -> can't draw
+            return None
+        elif sxx != 0:
+            return pg.InfiniteLine(QPointF(x.min(), ym), 0, pen)
         else:
-            self.hideAxis("left")
-            self.hideAxis("bottom")
-            self.group_axis.hide()
+            return pg.InfiniteLine(QPointF(xm, y.min()), 90, pen)
 
-    def reset_view(self):
-        if self.bar_item is None:
-            return
-        values = np.append(self.bar_item.opts["height"], 0)
-        min_ = np.nanmin(values)
-        max_ = -min_ + np.nanmax(values)
-        rect = QRectF(-0.5, min_, len(values) - 1, max_)
-        self.getViewBox().setRange(rect)
+    @staticmethod
+    def _regression_line(x, y, color, width, style=Qt.SolidLine):
+        min_x, max_x = np.min(x), np.max(x)
+        if min_x == max_x:
+            return None
+        slope, intercept, rvalue, _, _ = linregress(x, y)
+        angle = np.degrees(np.arctan(slope))
+        start_y = min_x * slope + intercept
+        l_opts = dict(color=color, position=0.85,
+                      rotateAxis=(1, 0), movable=True)
+        return pg.InfiniteLine(
+            pos=QPointF(min_x, start_y), angle=angle,
+            pen=pg.mkPen(color=color, width=width, style=style),
+            label=f"r = {rvalue:.2f}", labelOpts=l_opts)
 
-    def zoom_button_clicked(self):
-        self.state = ZOOMING
-        self.getViewBox().setMouseMode(pg.ViewBox.RectMode)
-
-    def pan_button_clicked(self):
-        self.state = PANNING
-        self.getViewBox().setMouseMode(pg.ViewBox.PanMode)
-
-    def select_button_clicked(self):
-        self.state = SELECT
-        self.getViewBox().setMouseMode(pg.ViewBox.RectMode)
-
-    def reset_button_clicked(self):
-        self.reset_view()
-
-    def update_group_lines(self):
-        if self.bar_item is None:
-            return
-
-        labels = np.array(self.master.get_group_labels())
-        if labels is None or len(labels) == 0:
-            return
-
-        _, indices = np.unique(labels, return_index=True)
-        offset = self.bar_width / 2 + (1 - self.bar_width) / 2
-        for index in sorted(indices)[1:]:
-            line = pg.InfiniteLine(pos=index - offset, angle=90)
-            self.addItem(line)
-
-    def select_by_rectangle(self, rect: QRectF):
-        if self.bar_item is None:
-            return
-
-        x0, x1 = sorted((rect.topLeft().x(), rect.bottomRight().x()))
-        y0, y1 = sorted((rect.topLeft().y(), rect.bottomRight().y()))
-        x = self.bar_item.opts["x"]
-        height = self.bar_item.opts["height"]
-        d = self.bar_width / 2
-        # positive bars
-        mask = (x0 <= x + d) & (x1 >= x - d) & (y0 <= height) & (y1 > 0)
-        # negative bars
-        mask |= (x0 <= x + d) & (x1 >= x - d) & (y0 <= 0) & (y1 > height)
-        self.select_by_indices(list(np.flatnonzero(mask)))
-
-    def select_by_click(self, p: QPointF):
-        if self.bar_item is None:
-            return
-
-        index = self.__get_index_at(p)
-        self.select_by_indices([index] if index is not None else [])
-
-    def __get_index_at(self, p: QPointF):
-        x = p.x()
-        index = round(x)
-        heights = self.bar_item.opts["height"]
-        if 0 <= index < len(heights) and abs(x - index) <= self.bar_width / 2:
-            height = heights[index]  # pylint: disable=unsubscriptable-object
-            if 0 <= p.y() <= height or height <= p.y() <= 0:
-                return index
-        return None
-
-    def select_by_indices(self, indices: List):
-        keys = QApplication.keyboardModifiers()
-        if keys & Qt.ControlModifier:
-            self.selection = list(set(self.selection) ^ set(indices))
-        elif keys & Qt.AltModifier:
-            self.selection = list(set(self.selection) - set(indices))
-        elif keys & Qt.ShiftModifier:
-            self.selection = list(set(self.selection) | set(indices))
+    def _add_line(self, x, y, color):
+        width = self.parameter_setter.reg_line_settings[Updater.WIDTH_LABEL]
+        alpha = self.parameter_setter.reg_line_settings[Updater.ALPHA_LABEL]
+        style = self.parameter_setter.reg_line_settings[Updater.STYLE_LABEL]
+        style = Updater.LINE_STYLES[style]
+        color.setAlpha(alpha)
+        if self.orthonormal_regression:
+            line = self._orthonormal_line(x, y, color, width, style)
         else:
-            self.selection = list(set(indices))
-        self.__select_bars()
-        self.selection_changed.emit(self.selection)
-
-    def __select_bars(self):
-        if self.bar_item is None:
+            line = self._regression_line(x, y, color, width, style)
+        if line is None:
             return
+        self.plot_widget.addItem(line)
+        self.reg_line_items.append(line)
 
-        n = len(self.bar_item.opts["height"])
-        pens = np.full(n, pg.mkPen(QColor(Qt.white)))
-        pen = pg.mkPen(QColor(Qt.black))
-        pen.setStyle(Qt.DashLine)
-        pens[self.selection] = pen
-        self.bar_item.setOpts(pens=pens)
+        if hasattr(line, "label"):
+            Updater.update_label_font(
+                [line.label], self.parameter_setter.reg_line_label_font
+            )
 
-    def help_event(self, ev: QGraphicsSceneHelpEvent):
-        if self.bar_item is None:
-            return False
+    def update_reg_line_label_colors(self):
+        for line in self.reg_line_items:
+            if hasattr(line, "label"):
+                color = 0.0 if self.class_density \
+                    else line.pen.color().darker(175)
+                line.label.setColor(color)
 
-        index = self.__get_index_at(self.bar_item.mapFromScene(ev.scenePos()))
-        text = ""
-        if index is not None:
-            text = self.master.get_tooltip(index)
-        if text:
-            QToolTip.showText(ev.screenPos(), text, widget=self)
-            return True
-        else:
-            return False
+    def update_density(self):
+        super().update_density()
+        self.update_reg_line_label_colors()
+
+    def update_regression_line(self):
+        for line in self.reg_line_items:
+            self.plot_widget.removeItem(line)
+        self.reg_line_items.clear()
+        if not (self.show_reg_line
+                and self.master.can_draw_regresssion_line()):
+            return
+        x, y = self.master.get_coordinates_data()
+        if x is None:
+            return
+        self._add_line(x, y, QColor("#505050"))
+        if self.master.is_continuous_color() or self.palette is None:
+            return
+        c_data = self.master.get_color_data()
+        if c_data is None:
+            return
+        c_data = c_data.astype(int)
+        for val in range(c_data.max() + 1):
+            mask = c_data == val
+            if mask.sum() > 1:
+                self._add_line(x[mask], y[mask], self.palette[val].darker(135))
+        self.update_reg_line_label_colors()
 
 
-class OWBarPlot(OWWidget):
+class OWScatterPlot(OWDataProjectionWidget):
+    """Scatterplot visualization with explorative analysis and intelligent
+    data visualization enhancements."""
+
     name = "Spectro Experimento"
     description = "Visualizes comparisons among categorical variables."
     icon = "icons/audio-spectrum.svg"
@@ -378,319 +323,354 @@ class OWBarPlot(OWWidget):
         mz_array = Input("Data", Table, default=True)
         data_subset = Input("Data Subset", Table)
 
-    class Outputs:
-        selected_data = Output("Selected Data", Table, default=True)
-        annotated_data = Output(ANNOTATED_DATA_SIGNAL_NAME, Table)
+    class Outputs(OWDataProjectionWidget.Outputs):
+        features = Output("Features", AttributeList, dynamic=False)
 
-    buttons_area_orientation = Qt.Vertical
-    settingsHandler = DomainContextHandler()
-    selected_var = ContextSetting(None)
-    group_var = ContextSetting(None)
-    annot_var = ContextSetting(None)
-    color_var = ContextSetting(None)
-    auto_commit = Setting(True)
-    selection = Setting(None, schema_only=True)
-    visual_settings = Setting({}, schema_only=True)
+    settings_version = 5
+    auto_sample = Setting(True)
+    attr_x = ContextSetting(None)
+    attr_y = ContextSetting(None)
+    tooltip_shows_all = Setting(True)
 
-    graph = SettingProvider(BarPlotGraph)
-    graph_name = "graph.plotItem"
+    GRAPH_CLASS = OWScatterPlotGraph
+    graph = SettingProvider(OWScatterPlotGraph)
+    embedding_variables_names = None
 
-    class Error(OWWidget.Error):
-        no_cont_features = Msg("Plotting requires a numeric feature.")
+    xy_changed_manually = Signal(Variable, Variable)
 
-    class Information(OWWidget.Information):
-        too_many_instances = Msg("Data has too many instances. Only first {}"
-                                 " are shown.".format(MAX_INSTANCES))
+    class Warning(OWDataProjectionWidget.Warning):
+        missing_coords = Msg(
+            "Plot cannot be displayed because '{}' or '{}' "
+            "is missing for all data points.")
 
-    enumeration = "Enumeration"
+    class Information(OWDataProjectionWidget.Information):
+        sampled_sql = Msg("Large SQL table; showing a sample.")
+        missing_coords = Msg(
+            "Points with missing '{}' or '{}' are not displayed")
 
     def __init__(self):
+        self.attr_box: QGroupBox = None
+        self.xy_model: DomainModel = None
+        self.cb_attr_x: ComboBoxSearch = None
+        self.cb_attr_y: ComboBoxSearch = None
+        self.vizrank: ScatterPlotVizRank = None
+        self.vizrank_button: QPushButton = None
+        self.sampling: QGroupBox = None
+        self._xy_invalidated: bool = True
+
+        self.sql_data = None  # Orange.data.sql.table.SqlTable
+        self.attribute_selection_list = None  # list of Orange.data.Variable
+        self.__timer = QTimer(self, interval=1200)
+        self.__timer.timeout.connect(self.add_data)
         super().__init__()
-        self.data: Optional[Table] = None
-        self.orig_data: Optional[Table] = None
-        self.subset_data: Optional[Table] = None
-        self.subset_indices = []
-        self.graph: Optional[BarPlotGraph] = None
-        self._selected_var_model: Optional[DomainModel] = None
-        self._group_var_model: Optional[DomainModel] = None
-        self._annot_var_model: Optional[DomainModel] = None
-        self._color_var_model: Optional[DomainModel] = None
-        self.__pending_selection = self.selection
 
-        self.setup_gui()
-        VisualSettingsDialog(
-            self, self.graph.parameter_setter.initial_settings
-        )
-
-    def setup_gui(self):
-        self._add_graph()
-        self._add_controls()
-
-    def _add_graph(self):
-        box = gui.vBox(self.mainArea, True, margin=0)
-        self.graph = BarPlotGraph(self)
-        self.graph.selection_changed.connect(self.__selection_changed)
-        box.layout().addWidget(self.graph)
-
-    def __selection_changed(self, indices: List):
-        self.selection = list(set(self.grouped_indices[indices]))
-        self.commit.deferred()
+        # manually register Matplotlib file writers
+        self.graph_writers = self.graph_writers.copy()
+        for w in [MatplotlibFormat, MatplotlibPDFFormat]:
+            self.graph_writers.append(w)
 
     def _add_controls(self):
-        box = gui.vBox(self.controlArea, True)
-        gui.rubber(self.controlArea)
-        self._selected_var_model = DomainModel(valid_types=ContinuousVariable)
-        gui.comboBox(
-            box, self, "selected_var", label="Values:",
-            model=self._selected_var_model, contentsLength=12, searchable=True,
-            orientation=Qt.Horizontal, callback=self.__parameter_changed,
-        )
+        self._add_controls_axis()
+        self._add_controls_sampling()
+        super()._add_controls()
+        self.gui.add_widget(self.gui.JitterNumericValues, self._effects_box)
+        self.gui.add_widgets(
+            [self.gui.ShowGridLines,
+             self.gui.ToolTipShowsAll,
+             self.gui.RegressionLine],
+            self._plot_box)
+        gui.checkBox(
+            self._plot_box, self,
+            value="graph.orthonormal_regression",
+            label="Treat variables as independent",
+            callback=self.graph.update_regression_line,
+            tooltip=
+            "If checked, fit line to group (minimize distance from points);\n"
+            "otherwise fit y as a function of x (minimize vertical distances)",
+            disabledBy=self.cb_reg_line)
 
-        self._group_var_model = DomainModel(
-            placeholder="None", valid_types=DiscreteVariable
+    def _add_controls_axis(self):
+        common_options = dict(
+            labelWidth=50, orientation=Qt.Horizontal, sendSelectedValue=True,
+            contentsLength=12, searchable=True
         )
-        gui.comboBox(
-            box, self, "group_var", label="Group by:",
-            model=self._group_var_model, contentsLength=12, searchable=True,
-            orientation=Qt.Horizontal, callback=self.__group_var_changed,
+        self.attr_box = gui.vBox(self.controlArea, 'Axes',
+                                 spacing=2 if gui.is_macstyle() else 8)
+        dmod = DomainModel
+        self.xy_model = DomainModel(dmod.MIXED, valid_types=dmod.PRIMITIVE)
+        self.cb_attr_x = gui.comboBox(
+            self.attr_box, self, "attr_x", label="Axis x:",
+            callback=self.set_attr_from_combo,
+            model=self.xy_model, **common_options,
         )
-
-        self._annot_var_model = DomainModel(
-            placeholder="None",
-            valid_types=(DiscreteVariable, StringVariable)
+        self.cb_attr_y = gui.comboBox(
+            self.attr_box, self, "attr_y", label="Axis y:",
+            callback=self.set_attr_from_combo,
+            model=self.xy_model, **common_options,
         )
-        self._annot_var_model.order = self._annot_var_model.order[:1] + \
-                                      (self.enumeration,) + \
-                                      self._annot_var_model.order[1:]
-        gui.comboBox(
-            box, self, "annot_var", label="Annotations:",
-            model=self._annot_var_model, contentsLength=12, searchable=True,
-            orientation=Qt.Horizontal, callback=self.__parameter_changed,
-        )
+        vizrank_box = gui.hBox(self.attr_box)
+        self.vizrank, self.vizrank_button = ScatterPlotVizRank.add_vizrank(
+            vizrank_box, self, "Find Informative Projections", self.set_attr)
 
-        self._color_var_model = DomainModel(
-            placeholder="(Same color)", valid_types=DiscreteVariable
-        )
-        gui.comboBox(
-            box, self, "color_var", label="Color:",
-            model=self._color_var_model,
-            contentsLength=12, searchable=True, orientation=Qt.Horizontal,
-            callback=self.__parameter_changed,
-        )
-
-        plot_gui = OWPlotGUI(self)
-        plot_gui.box_zoom_select(self.buttonsArea)
-
-        gui.auto_send(self.buttonsArea, self, "auto_commit")
-
-    def __parameter_changed(self):
-        self.graph.reset_graph()
-
-    def __group_var_changed(self):
-        self.clear_cache()
-        self.graph.selection = self.grouped_indices_inverted
-        self.__parameter_changed()
+    def _add_controls_sampling(self):
+        self.sampling = gui.auto_commit(
+            self.controlArea, self, "auto_sample", "Sample", box="Sampling",
+            callback=self.switch_sampling, commit=lambda: self.add_data(1))
+        self.sampling.setVisible(False)
 
     @property
-    @lru_cache()
-    def grouped_indices(self):
-        indices = []
-        if self.data:
-            indices = np.arange(len(self.data))
-            if self.group_var:
-                group_by = self.data.get_column(self.group_var)
-                indices = np.argsort(group_by, kind="mergesort")
-        return indices
+    def effective_variables(self):
+        return [self.attr_x, self.attr_y] if self.attr_x and self.attr_y else []
 
     @property
-    def grouped_indices_inverted(self):
-        mask = np.isin(self.grouped_indices, self.selection)
-        return np.flatnonzero(mask)
+    def effective_data(self):
+        eff_var = self.effective_variables
+        if eff_var and self.attr_x.name == self.attr_y.name:
+            eff_var = [self.attr_x]
+        return self.data.transform(Domain(eff_var))
 
-    @property
-    def grouped_data(self):
-        return self.data[self.grouped_indices]
+    def _vizrank_color_change(self):
+        self.vizrank.initialize()
+        err_msg = ""
+        if self.data is None:
+            err_msg = "No data on input"
+        elif self.data.is_sparse():
+            err_msg = "Data is sparse"
+        elif len(self.xy_model) < 3:
+            err_msg = "Not enough features for ranking"
+        elif self.attr_color is None:
+            err_msg = "Color variable is not selected"
+        elif np.isnan(self.data.get_column(self.attr_color)).all():
+            err_msg = "Color variable has no values"
+        self.vizrank_button.setEnabled(not err_msg)
+        self.vizrank_button.setToolTip(err_msg)
 
-    @Inputs.data
-    @check_sql_input
-    def set_data(self, data: Optional[Table]):
-        self.closeContext()
-        self.clear()
-        self.orig_data = self.data = data
-        self.check_data()
-        self.init_attr_values()
-        self.openContext(self.data)
-        self.clear_cache()
-        self.commit.now()
+    @OWDataProjectionWidget.Inputs.data
+    def set_data(self, data):
+        super().set_data(data)
+        self._vizrank_color_change()
+
+        def findvar(name, iterable):
+            """Find a Orange.data.Variable in `iterable` by name"""
+            for el in iterable:
+                if isinstance(el, Variable) and el.name == name:
+                    return el
+            return None
+
+        # handle restored settings from  < 3.3.9 when attr_* were stored
+        # by name
+        if isinstance(self.attr_x, str):
+            self.attr_x = findvar(self.attr_x, self.xy_model)
+        if isinstance(self.attr_y, str):
+            self.attr_y = findvar(self.attr_y, self.xy_model)
+        if isinstance(self.attr_label, str):
+            self.attr_label = findvar(self.attr_label, self.gui.label_model)
+        if isinstance(self.attr_color, str):
+            self.attr_color = findvar(self.attr_color, self.gui.color_model)
+        if isinstance(self.attr_shape, str):
+            self.attr_shape = findvar(self.attr_shape, self.gui.shape_model)
+        if isinstance(self.attr_size, str):
+            self.attr_size = findvar(self.attr_size, self.gui.size_model)
 
     def check_data(self):
-        self.clear_messages()
-        if self.data is not None:
-            if self.data.domain.has_continuous_attributes(True, True) == 0:
-                self.Error.no_cont_features()
-                self.data = None
-            elif len(self.data) > MAX_INSTANCES:
-                self.Information.too_many_instances()
-                self.data = self.data[:MAX_INSTANCES]
+        super().check_data()
+        self.__timer.stop()
+        self.sampling.setVisible(False)
+        self.sql_data = None
+        if isinstance(self.data, SqlTable):
+            if self.data.approx_len() < 4000:
+                self.data = Table(self.data)
+            else:
+                self.Information.sampled_sql()
+                self.sql_data = self.data
+                data_sample = self.data.sample_time(0.8, no_cache=True)
+                data_sample.download_data(2000, partial=True)
+                self.data = Table(data_sample)
+                self.sampling.setVisible(True)
+                if self.auto_sample:
+                    self.__timer.start()
 
-    def init_attr_values(self):
-        domain = self.data.domain if self.data else None
-        for model, var in ((self._selected_var_model, "selected_var"),
-                           (self._group_var_model, "group_var"),
-                           (self._annot_var_model, "annot_var"),
-                           (self._color_var_model, "color_var")):
-            model.set_domain(domain)
-            setattr(self, var, None)
+        if self.data is not None and (len(self.data) == 0 or
+                                      len(self.data.domain.variables) == 0):
+            self.data = None
 
-        if self._selected_var_model:
-            self.selected_var = self._selected_var_model[0]
-        if domain is not None and domain.has_discrete_class:
-            self.color_var = domain.class_var
-
-    @Inputs.data_subset
-    @check_sql_input
-    def set_subset_data(self, data: Optional[Table]):
-        self.subset_data = data
-
-    def handleNewSignals(self):
-        self._handle_subset_data()
-        self.setup_plot()
-
-    def _handle_subset_data(self):
-        sub_ids = {e.id for e in self.subset_data} \
-            if self.subset_data is not None else {}
-        self.subset_indices = []
-        if self.data is not None and sub_ids:
-            self.subset_indices = [x.id for x in self.data if x.id in sub_ids]
-
-    def get_values(self) -> Optional[np.ndarray]:
-        if not self.data or not self.selected_var:
+    def get_embedding(self):
+        self.valid_data = None
+        if self.data is None:
             return None
-        return self.grouped_data.get_column(self.selected_var)
 
-    def get_labels(self) -> Optional[Union[List, np.ndarray]]:
-        if not self.data:
+        x_data = self.get_column(self.attr_x, filter_valid=False)
+        y_data = self.get_column(self.attr_y, filter_valid=False)
+        if x_data is None or y_data is None:
             return None
-        elif not self.annot_var:
-            return []
-        elif self.annot_var == self.enumeration:
-            return [
-                str(x)
-                for x in np.arange(1, len(self.data) + 1)[self.grouped_indices]
-            ]
-        else:
-            return [self.annot_var.str_val(row[self.annot_var])
-                    for row in self.grouped_data]
 
-    def get_group_labels(self) -> Optional[List]:
-        if not self.data:
-            return None
-        elif not self.group_var:
-            return []
-        else:
-            return [self.group_var.str_val(row[self.group_var])
-                    for row in self.grouped_data]
+        self.Warning.missing_coords.clear()
+        self.Information.missing_coords.clear()
+        self.valid_data = np.isfinite(x_data) & np.isfinite(y_data)
+        if self.valid_data is not None and not np.all(self.valid_data):
+            msg = self.Information if np.any(self.valid_data) else self.Warning
+            msg.missing_coords(self.attr_x.name, self.attr_y.name)
+        return np.vstack((x_data, y_data)).T
 
-    def get_legend_data(self) -> List:
-        if not self.data or not self.color_var:
-            return []
-        else:
-            assert self.color_var.is_discrete
-            return [(QColor(*color), text) for color, text in
-                    zip(self.color_var.colors, self.color_var.values)]
-
-    def get_colors(self) -> Optional[List[QColor]]:
-        def create_color(i, id_):
-            lighter = id_ not in self.subset_indices and self.subset_indices
-            alpha = 50 if lighter else 255
-            if np.isnan(i):
-                return QColor(*(128, 128, 128, alpha))
-            return QColor(*np.append(self.color_var.colors[int(i)], alpha))
-
-        if not self.data:
-            return None
-        elif not self.color_var:
-            return [create_color(np.nan, id_) for id_ in self.grouped_data.ids]
-        else:
-            assert self.color_var.is_discrete
-            col = self.grouped_data.get_column(self.color_var)
-            return [create_color(i, id_) for id_, i in
-                    zip(self.grouped_data.ids, col)]
-
-    def get_tooltip(self, index: int) -> str:
-        if not self.data:
-            return ""
-        row = self.grouped_data[index]
-        attrs = [self.selected_var]
-        if self.group_var and self.group_var not in attrs:
-            attrs.append(self.group_var)
-        if isinstance(self.annot_var, Variable) and self.annot_var not in attrs:
-            attrs.append(self.annot_var)
-        if self.color_var and self.color_var not in attrs:
-            attrs.append(self.color_var)
-        text = "<br/>".join(escape('{} = {}'.format(var.name, row[var]))
-                            for var in attrs)
-        others = instance_tooltip(self.data.domain, row, skip_attrs=attrs)
-        if others:
-            text = "<b>{}</b><br/><br/>{}".format(text, others)
+    # Tooltip
+    def _point_tooltip(self, point_id, skip_attrs=()):
+        point_data = self.data[point_id]
+        xy_attrs = (self.attr_x, self.attr_y)
+        text = "<br/>".join(
+            escape('{} = {}'.format(var.name, point_data[var]))
+            for var in xy_attrs)
+        if self.tooltip_shows_all:
+            others = super()._point_tooltip(point_id, skip_attrs=xy_attrs)
+            if others:
+                text = "<b>{}</b><br/><br/>{}".format(text, others)
         return text
 
-    def get_axes(self) -> Optional[Tuple[str, str, str]]:
-        if not self.data:
-            return None
-        return (self.selected_var.name,
-                self.group_var.name if self.group_var else "",
-                self.annot_var if self.annot_var else "")
+    def can_draw_regresssion_line(self):
+        return self.data is not None and \
+               self.data.domain is not None and \
+               self.attr_x.is_continuous and \
+               self.attr_y.is_continuous
 
-    def setup_plot(self):
-        self.graph.reset_graph()
-        self.apply_selection()
+    def add_data(self, time=0.4):
+        if self.data and len(self.data) > 2000:
+            self.__timer.stop()
+            return
+        data_sample = self.sql_data.sample_time(time, no_cache=True)
+        if data_sample:
+            data_sample.download_data(2000, partial=True)
+            data = Table(data_sample)
+            self.data = Table.concatenate((self.data, data), axis=0)
+            self.handleNewSignals()
 
-    def apply_selection(self):
-        if self.data and self.__pending_selection is not None:
-            self.selection = [i for i in self.__pending_selection
-                              if i < len(self.data)]
-            self.graph.select_by_indices(self.grouped_indices_inverted)
-            self.__pending_selection = None
+    def init_attr_values(self):
+        super().init_attr_values()
+        data = self.data
+        domain = data.domain if data and len(data) else None
+        self.xy_model.set_domain(domain)
+        self.attr_x = self.xy_model[0] if self.xy_model else None
+        self.attr_y = self.xy_model[1] if len(self.xy_model) >= 2 \
+            else self.attr_x
+
+    def switch_sampling(self):
+        self.__timer.stop()
+        if self.auto_sample and self.sql_data:
+            self.add_data()
+            self.__timer.start()
+
+    @OWDataProjectionWidget.Inputs.data_subset
+    def set_subset_data(self, subset_data):
+        self.warning()
+        if isinstance(subset_data, SqlTable):
+            if subset_data.approx_len() < AUTO_DL_LIMIT:
+                subset_data = Table(subset_data)
+            else:
+                self.warning("Data subset does not support large Sql tables")
+                subset_data = None
+        super().set_subset_data(subset_data)
+
+    # called when all signals are received, so the graph is updated only once
+    def handleNewSignals(self):
+        self.attr_box.setEnabled(True)
+        self.vizrank.setEnabled(True)
+        if self.attribute_selection_list and self.data is not None and \
+                self.data.domain is not None and \
+                all(attr in self.data.domain for attr
+                        in self.attribute_selection_list):
+            self.attr_x, self.attr_y = self.attribute_selection_list[:2]
+            self.attr_box.setEnabled(False)
+            self.vizrank.setEnabled(False)
+        self._invalidated = self._invalidated or self._xy_invalidated
+        self._xy_invalidated = False
+        super().handleNewSignals()
+        if self._domain_invalidated:
+            self.graph.update_axes()
+            self._domain_invalidated = False
+        self.cb_reg_line.setEnabled(self.can_draw_regresssion_line())
+
+    @Inputs.features
+    def set_shown_attributes(self, attributes):
+        if attributes and len(attributes) >= 2:
+            self.attribute_selection_list = attributes[:2]
+            self._xy_invalidated = self._xy_invalidated \
+                or self.attr_x != attributes[0] \
+                or self.attr_y != attributes[1]
+        else:
+            self.attribute_selection_list = None
+
+    def set_attr(self, attr_x, attr_y):
+        if attr_x != self.attr_x or attr_y != self.attr_y:
+            self.attr_x, self.attr_y = attr_x, attr_y
+            self.attr_changed()
+
+    def set_attr_from_combo(self):
+        self.attr_changed()
+        self.xy_changed_manually.emit(self.attr_x, self.attr_y)
+
+    def attr_changed(self):
+        self.cb_reg_line.setEnabled(self.can_draw_regresssion_line())
+        self.setup_plot()
+        self.commit.deferred()
+
+    def get_axes(self):
+        return {"bottom": self.attr_x, "left": self.attr_y}
+
+    def colors_changed(self):
+        super().colors_changed()
+        self._vizrank_color_change()
 
     @gui.deferred
     def commit(self):
-        selected = None
-        if self.data is not None and bool(self.selection):
-            selected = self.data[self.selection]
-        annotated = create_annotated_table(self.orig_data, self.selection)
-        self.Outputs.selected_data.send(selected)
-        self.Outputs.annotated_data.send(annotated)
+        super().commit()
+        self.send_features()
 
-    def clear(self):
-        self.selection = None
-        self.graph.selection = []
-        self.clear_cache()
+    def send_features(self):
+        features = [attr for attr in [self.attr_x, self.attr_y] if attr]
+        self.Outputs.features.send(AttributeList(features) or None)
 
-    @staticmethod
-    def clear_cache():
-        OWBarPlot.grouped_indices.fget.cache_clear()
+    def get_widget_name_extension(self):
+        if self.data is not None:
+            return "{} vs {}".format(self.attr_x.name, self.attr_y.name)
+        return None
 
-    def send_report(self):
-        if self.data is None:
-            return
-        self.report_plot()
+    def _get_send_report_caption(self):
+        return report.render_items_vert((
+            ("Color", self._get_caption_var_name(self.attr_color)),
+            ("Label", self._get_caption_var_name(self.attr_label)),
+            ("Shape", self._get_caption_var_name(self.attr_shape)),
+            ("Size", self._get_caption_var_name(self.attr_size)),
+            ("Jittering", (self.attr_x.is_discrete or
+                           self.attr_y.is_discrete or
+                           self.graph.jitter_continuous) and
+             self.graph.jitter_size)))
 
-    def set_visual_settings(self, key: KeyType, value: ValueType):
-        self.graph.parameter_setter.set_parameter(key, value)
-        self.visual_settings[key] = value
+    @classmethod
+    def migrate_settings(cls, settings, version):
+        if version < 2 and "selection" in settings and settings["selection"]:
+            settings["selection_group"] = [(a, 1) for a in settings["selection"]]
+        if version < 3:
+            if "auto_send_selection" in settings:
+                settings["auto_commit"] = settings["auto_send_selection"]
+            if "selection_group" in settings:
+                settings["selection"] = settings["selection_group"]
+        if version < 5:
+            if "graph" in settings and \
+                    "jitter_continuous" not in settings["graph"]:
+                settings["graph"]["jitter_continuous"] = True
 
-    def sizeHint(self):  # pylint: disable=no-self-use
-        return QSize(1132, 708)
+    @classmethod
+    def migrate_context(cls, context, version):
+        values = context.values
+        if version < 3:
+            values["attr_color"] = values["graph"]["attr_color"]
+            values["attr_size"] = values["graph"]["attr_size"]
+            values["attr_shape"] = values["graph"]["attr_shape"]
+            values["attr_label"] = values["graph"]["attr_label"]
+        if version < 4:
+            if values["attr_x"][1] % 100 == 1 or values["attr_y"][1] % 100 == 1:
+                raise IncompatibleContext()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.graph.reset_view()
 
-
-if __name__ == "__main__":
-    from Orange.widgets.utils.widgetpreview import WidgetPreview
-
-    iris = Table("iris")
-    WidgetPreview(OWBarPlot).run(set_data=iris[::3],
-                                 set_subset_data=iris[::15])
+if __name__ == "__main__":  # pragma: no cover
+    table = Table("iris")
+    WidgetPreview(OWScatterPlot).run(set_data=table,
+                                     set_subset_data=table[:30])
