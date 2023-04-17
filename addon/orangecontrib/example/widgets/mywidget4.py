@@ -140,7 +140,7 @@ class OWHeatMap(widget.OWWidget):
     keywords = []
 
     class Inputs:
-        data = Input("Data", Table)
+        data = Input("Imgi", Table)
 
     class Outputs:
         selected_data = Output("Selected Data", Table, default=True)
@@ -621,6 +621,7 @@ class OWHeatMap(widget.OWWidget):
                 self.Information.discrete_ignored(
                     ndisc, "s" if ndisc > 1 else "")
 
+        
         self.data = data
         self.input_data = input_data
 

@@ -1,6 +1,26 @@
-import numpy as np
+
+import enum
+
 import cv2
-from scipy.io import savemat, loadmat
+
+
+import pandas as pd
+import typing
+
+import matplotlib as plt
+import numpy as np
+
+
+
+
+if typing.TYPE_CHECKING:
+    # pylint: disable=invalid-name
+    T = typing.TypeVar("T")
+    K = typing.TypeVar("K")
+    E = typing.TypeVar("E", bound=enum.Enum)
+import numpy as np
+
+from scipy.io import loadmat
 def sum_spectrum(mz_array, i_array):
     ''' calculates the sum of all spectra accross the matrix. '''
     
@@ -29,21 +49,17 @@ def visualize():
       im_crude[int(i[0])-1, int(i[1])-1] = i[3]
   out = np.zeros(im_crude.shape, np.float32)
   normalized = cv2.normalize(im_crude, out, 1.0, 0.0, cv2.NORM_MINMAX)
-  cv2.imshow("image",normalized)
+  colormap = plt.get_cmap('inferno')
+  heatmap = (colormap(normalized) * 2**16).astype(np.uint16)[:,:,:3]
+  heatmap = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
+  cv2.imshow('normalized', normalized)
+  cv2.imshow('heatmap', heatmap)
   cv2.waitKey(0) 
 
-import matplotlib.pyplot as plt
-import numpy as np
-import cv2
-def heatmap(image):
-    
-    colormap = plt.get_cmap('inferno')
-    heatmap = (colormap(image) * 2**16).astype(np.uint16)[:,:,:3]
-    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
 
-cv2.imshow('image', image)
-cv2.imshow('heatmap', heatmap)
-cv2.waitKey()
+
+
+
 
 def get_min_max(arr, col):
   return int(np.max(arr[:,[col]])), int(np.min(arr[:,[col]]))
