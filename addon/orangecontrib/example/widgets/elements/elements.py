@@ -3,7 +3,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication,
                              QHBoxLayout, QLabel, QWidget, QPushButton, QFileDialog)
-from elements.settings import ParameterGroupList,SpectrumList, ParameterGroup, Spectrum, ConfigIBD
+from orangecontrib.example.widgets.elements.settings import ParameterGroupList,SpectrumList, ParameterGroup, Spectrum, ConfigIBD
 from typing import Tuple
 import xml.etree.ElementTree as ET
 from lxml.etree import QName
@@ -21,6 +21,7 @@ class Loader(QWidget):
         self.setLayout(open_folder_layout)
         self.imzml_loaded = False
         self.configIBD_loaded = False
+        self.workspace = ""
     
 
     def open_workspace(self):
@@ -41,6 +42,7 @@ class Loader(QWidget):
         self.experiment_settings = ParameterGroupList()
         self.spectrum_list = SpectrumList()
         self.im_list = []
+       
         for event, element in ET.iterparse(filepath):
             tag = QName(element.tag).localname
             # print(tag)
@@ -49,14 +51,19 @@ class Loader(QWidget):
                     parameter_group = ParameterGroup.from_element(ref_param_group)
                     self.experiment_settings.add(parameter_group)
             elif tag == "spectrum":
-                spectrum, im = Spectrum.from_element(element)
+                spectrum, im, intensity_key = Spectrum.from_element(element)
                 self.im_list.append(im)
                 self.spectrum_list.add(spectrum)
-        self.mz_format = self.experiment_settings.get_parameter_group("mzArray").get_parameter("format")
-        self.i_format = self.experiment_settings.get_parameter_group("intensities").get_parameter("format")
+                
+
+
+        self.mz_format = self.experiment_settings.get_parameter_group("mzArray").get_parameter("format").value
+        self.i_format = self.experiment_settings.get_parameter_group(intensity_key).get_parameter("format").value
         self.mz_array_len = int(max(map(lambda im:im[4],self.im_list)))
+
         self.i_array_len = int(max(map(lambda im:im[7],self.im_list)))
         self.configIBD = ConfigIBD(self.mz_format, self.i_format,self.mz_array_len,self.i_array_len)
+        self.configIBD_loaded = True
         self.im_list = np.array(self.im_list)
         self.configIBD.export(self.workspace)
         savemat(os.path.join(self.workspace,"imgi.mat"), {'data': self.im_list})
@@ -83,6 +90,10 @@ class Loader(QWidget):
         return result
     def load_ibd(self, ibd_filepath:str) -> None:
         settings_IBD = self.get_config_IBD()
+        print(f"""
+        Mz_format {settings_IBD.mz_format}
+        I_format {settings_IBD.i_format}
+        """)
         mz_format = self.get_format(settings_IBD.mz_format)
         i_format = self.get_format(settings_IBD.i_format)
         self.mz_array_list = []

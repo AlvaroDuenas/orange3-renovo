@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-
+from scipy.io import savemat, loadmat
 def sum_spectrum(mz_array, i_array):
     ''' calculates the sum of all spectra accross the matrix. '''
     
@@ -19,8 +19,8 @@ def sum_spectrum(mz_array, i_array):
     
     return mz_values, i_values
   
-def visualize(im_list):
-  #im_list = loadmat("pruebas\data.mat")['data']
+def visualize():
+  im_list = loadmat("addon/imgi.mat")['data']
   max_x, min_x = get_min_max(im_list,0)
 
   max_y, min_y = get_min_max(im_list,1)
@@ -32,5 +32,21 @@ def visualize(im_list):
   cv2.imshow("image",normalized)
   cv2.waitKey(0) 
 
+import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+def heatmap(image):
+    
+    colormap = plt.get_cmap('inferno')
+    heatmap = (colormap(image) * 2**16).astype(np.uint16)[:,:,:3]
+    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
+
+cv2.imshow('image', image)
+cv2.imshow('heatmap', heatmap)
+cv2.waitKey()
+
 def get_min_max(arr, col):
   return int(np.max(arr[:,[col]])), int(np.min(arr[:,[col]]))
+
+if __name__ == "__main__": 
+    visualize()

@@ -61,7 +61,6 @@ import Orange.data
 from Orange.misc.collections import natural_sorted
 
 from Orange.widgets import widget, gui, settings
-from Orange.widgets.utils.localization import pl
 from Orange.widgets.utils.concurrent import PyOwned
 from Orange.widgets.utils import (
     textimport, concurrent as qconcurrent, unique_everseen, enum_get, qname
@@ -99,6 +98,13 @@ def dialect_eq(lhs, rhs):
             lhs.quoting == rhs.quoting and
             lhs.skipinitialspace == rhs.skipinitialspace)
 
+"""
+Opciones:
+    formatos
+    tamaño\numero de valores
+    ruta de ficheros
+    
+"""
 
 class Options:
     """
@@ -158,7 +164,7 @@ class Options:
     def __reduce__(self):
         return type(self), (self.encoding, self.dialect,
                             self.columntypes, self.rowspec)
-
+    #TODO:options adaptados a las cabeceras del imzml (CONFIG FILE)
     def as_dict(self):
         # type: () -> Dict[str, Any]
         """
@@ -443,6 +449,12 @@ class IMZMLImport(widget.OWWidget):
             doc="",
             auto_summary=False
         )
+        spectrasum = widget.Output(
+            name="Spectrasum",
+            type=Orange.data.Table,
+            doc="",
+            auto_summary=False
+        )
 
     class Error(widget.OWWidget.Error):
         error = widget.Msg(
@@ -585,10 +597,12 @@ class IMZMLImport(widget.OWWidget):
         b.setEnabled(False)
         b.setAutoDefault(False)
 
-
+        """
         def update_buttons(cbindex):
             self.load_button.setEnabled(cbindex != -1)
         self.imzml_combo.currentIndexChanged.connect(update_buttons)
+        """
+        
 
         button_box.setStyleSheet(
             "button-layout: {:d};".format(enum_as_int(QDialogButtonBox.MacLayout))
@@ -884,10 +898,13 @@ class IMZMLImport(widget.OWWidget):
         for item in self.items():
             if item is None:
                 continue
-            if not isinstance(item.options(), Options):
-                continue
+            """
+                        if not isinstance(item.options(), Options):
+                            continue
+            """
+
             paths.append(item.path())
-            option_list.append(item.options())
+            #option_list.append(item.options())
 
         task = state = TaskState()
         state.future = ...
@@ -962,8 +979,6 @@ class IMZMLImport(widget.OWWidget):
             self.Error.encoding_error(exc_info=err)
         else:
             self.Error.error(exc_info=err)
-        #TODO
-        print(2)
         path = self.current_item(FileFormats).path()
         basename = os.path.basename(path)
         if isinstance(err, UnicodeDecodeError):
@@ -1002,30 +1017,32 @@ class IMZMLImport(widget.OWWidget):
         assert f is self.__watcher.future()
         self.__watcher = None
         self.__clear_running_state()
-        print(f.result())
         table_list = []
+        print(len(f.result()))
         for df in f.result():
-        try:
-            assert isinstance(df, pd.DataFrame)
-        except pandas.errors.EmptyDataError:
-            df = pd.DataFrame({})
-        except Exception as e:  # pylint: disable=broad-except
-            self.__set_error_state(e)
-            df = None
-        else:
-            self.__clear_error_state()
-        #TODO
-        if df is not None:
-            table = pandas_to_table(df)
-            #filename = self.current_item(FileFormats).path()
-            #table.name = os.path.splitext(os.path.split(filename)[-1])[0]
-        else:
-            table = None
-        table_list.append(table)
-
+            print(type(df))
+            try:
+                assert isinstance(df, pd.DataFrame)
+            except pandas.errors.EmptyDataError:
+                df = pd.DataFrame({})
+            except Exception as e:  # pylint: disable=broad-except
+                self.__set_error_state(e)
+                df = None
+            else:
+                self.__clear_error_state()
+            #TODO
+            if df is not None:
+                table = pandas_to_table(df)
+                #filename = self.current_item(FileFormats).path()
+                #table.name = os.path.splitext(os.path.split(filename)[-1])[0]
+            else:
+                table = None
+            table_list.append(table)
+        print(3)
         self.Outputs.data.send(table_list[0])
-        self.Outputs.mz_array.send(table_list[0])
-        self.Outputs.i_array.send(table_list[0])
+        self.Outputs.mz_array.send(table_list[1])
+        self.Outputs.i_array.send(table_list[2])
+        self.Outputs.spectrasum.send(table_list[3])
         self._update_status_messages(table_list[0])
 
     def _update_status_messages(self, data):
@@ -1066,7 +1083,7 @@ class IMZMLImport(widget.OWWidget):
         for item in map(model.item, range(model.rowCount())):
             if isinstance(item, ImportItem) and item.data(ImportItem.IsSessionItemRole):
                 vp = item.data(VarPathItem.VarPathRole)
-                session_items.append((vp.as_dict(), item.options().as_dict()))
+                session_items.append((vp.as_dict()))
         self._session_items_v2 = session_items
 
     def _restoreState(self):
@@ -1080,15 +1097,15 @@ class IMZMLImport(widget.OWWidget):
         # stored session items
         sitems = []
         # replacements = self._replacements()
-        for p, m in self._session_items_v2:
+        for p in self._session_items_v2:
             try:
-                p, m = (PathItem.from_dict(p), Options.from_dict(m))
+                p = (PathItem.from_dict(p))
             except (csv.Error, LookupError, ValueError):
                 _log.error("Failed to restore '%s'", p, exc_info=True)
             else:
-                sitems.append((p, m, True))
+                sitems.append((p, True))
         #TODO
-        items = sitems + [(PathItem.AbsPath(p), m, False) for p, m in items]
+        items = sitems + [(PathItem.AbsPath(p), False) for p in items]
         items = unique_everseen(items, key=lambda t: t[0])
         curr = self.imzml_combo.currentIndex()
         if curr != -1:
@@ -1096,9 +1113,8 @@ class IMZMLImport(widget.OWWidget):
         else:
             currentpath = None
 
-        for path, options, is_session in items:
+        for path,  is_session in items:
             item = ImportItem.fromPath(path)
-            item.setOptions(options)
             item.setData(is_session, ImportItem.IsSessionItemRole)
             model.appendRow(item)
 
@@ -1118,7 +1134,7 @@ class IMZMLImport(widget.OWWidget):
 
         if version is not None and version < 3:
             items_ = settings.pop("_session_items", [])
-            items_v2 = [(PathItem.AbsPath(p).as_dict(), m) for p, m in items_]
+            items_v2 = [(PathItem.AbsPath(p).as_dict()) for p in items_]
             settings["_session_items_v2"] = items_v2
 
 
@@ -1200,9 +1216,24 @@ def load(paths, option_list, progress_callback=None, compatibility_mode=False):
         loader = Loader()
         loader.load_imzml(paths[0])
         loader.load_ibd(paths[1])
-        
-        return loader.imgi_list, loader.mz_array, loader.i_array
+        spectrasum = sum_spectrum(loader.mz_array_list, loader.i_array_list)
+        return pd.DataFrame(loader.im_list), pd.DataFrame(loader.mz_array_list), pd.DataFrame(loader.i_array_list), pd.DataFrame([spectrasum])
 
+def sum_spectrum(mz_array, i_array):
+    total_spectra = dict()
+    for i in range(len(mz_array)):        
+        for j in range(len(mz_array[i])): 
+            if mz_array[i][j] == 0 and j != 0:
+                break
+            if mz_array[i][j] in total_spectra.keys():
+                total_spectra[mz_array[i][j]] += i_array[i][j]
+            else:
+                total_spectra[mz_array[i][j]] = i_array[i][j]
+                
+    mz_values = list(total_spectra.keys())
+    i_values = list(total_spectra.values())
+    
+    return total_spectra
 
 def guess_types(
         df: pd.DataFrame, dtypes: Dict[int, str], columns_ignored: Set[int]

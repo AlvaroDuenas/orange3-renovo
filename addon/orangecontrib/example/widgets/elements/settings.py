@@ -87,7 +87,8 @@ class ParameterGroup:
                             setting_dict["name"] = "format"
                             setting_dict["value"] = attribs[key]
                         else:
-                            setting_dict[key] = attribs[key]
+                            if not key in setting_dict:
+                                setting_dict[key] = attribs[key]
                 self.add(Parameter(setting_dict))
 
     def get_parameter(self, key: str) -> Parameter:
@@ -158,6 +159,10 @@ class Spectrum:
                 for binaryDataArray in element:
                     spectrum.parameter_group_list.add(
                         ParameterGroup.from_element(binaryDataArray))
+        if "intensities" in spectrum.parameter_group_list.parameter_groups.keys():
+            intensity_key = "intensities"
+        else:
+            intensity_key = "intensityArray"
         im[3] = spectrum.ion_current
         im[0] = spectrum.parameter_group_list.get_parameter_group(
             'instrumentConfiguration0').get_parameter('position x').value
@@ -170,12 +175,13 @@ class Spectrum:
         im[5] = spectrum.parameter_group_list.get_parameter_group(
             'mzArray').get_parameter('external encoded length').value
         im[6] = spectrum.parameter_group_list.get_parameter_group(
-            'intensities').get_parameter('external offset').value
+            intensity_key).get_parameter('external offset').value
         im[7] = spectrum.parameter_group_list.get_parameter_group(
-            'intensities').get_parameter('external array length').value
+            intensity_key).get_parameter('external array length').value
+        
         im[8] = spectrum.parameter_group_list.get_parameter_group(
-            'intensities').get_parameter('external encoded length').value
-        return spectrum, im
+            intensity_key).get_parameter('external encoded length').value
+        return spectrum, im, intensity_key
 
 
 class ConfigIBD:

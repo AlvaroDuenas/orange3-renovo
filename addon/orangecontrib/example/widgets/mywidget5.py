@@ -32,12 +32,10 @@ from Orange.widgets.visualize.utils.customizableplot import Updater
 from Orange.widgets.visualize.utils.widget import OWDataProjectionWidget
 from Orange.widgets.widget import AttributeList, Msg, Input, Output
 
-
 class ScatterPlotVizRank(VizRankDialogAttrPair):
     captionTitle = "Score Plots"
     minK = 10
     attr_color = None
-
     def __init__(self, master):
         super().__init__(master)
         self.attr_color = self.master.attr_color
