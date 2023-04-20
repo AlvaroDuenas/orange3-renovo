@@ -6,10 +6,10 @@ import cv2
 
 import pandas as pd
 import typing
-
+import matplotlib.pyplot as ptt
 import matplotlib as plt
 import numpy as np
-
+import sys
 
 
 
@@ -59,10 +59,18 @@ def visualize():
 
 
 
+def stem_plot(mz_array_path, i_array_path):
+    mz_array = loadmat(mz_array_path)['data']
+    i_array = loadmat(i_array_path)['data']
+    x,y = sum_spectrum(mz_array, i_array)
+    markerline, stemlines, baseline = ptt.stem(x, y, linefmt='grey', markerfmt='*', bottom=1.1)
 
+    markerline.set_markerfacecolor('red')
+
+    ptt.show()
 
 def get_min_max(arr, col):
   return int(np.max(arr[:,[col]])), int(np.min(arr[:,[col]]))
 
 if __name__ == "__main__": 
-    visualize()
+    stem_plot(sys.argv[1], sys.argv[2])
