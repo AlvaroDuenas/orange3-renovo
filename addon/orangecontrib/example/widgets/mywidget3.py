@@ -24,7 +24,7 @@ import gzip
 import lzma
 import bz2
 import zipfile
-
+import pickle
 from xml.sax.saxutils import escape
 from functools import singledispatch
 from contextlib import ExitStack
@@ -59,7 +59,8 @@ from orangewidget.utils import enum_as_int
 
 import Orange.data
 from Orange.misc.collections import natural_sorted
-
+from orangecontrib.example.widgets.elements.elements import Loader
+from orangecontrib.example.widgets.elements.utils import Graficos, sum_spectrum
 from Orange.widgets import widget, gui, settings
 from Orange.widgets.utils.concurrent import PyOwned
 from Orange.widgets.utils import (
@@ -73,6 +74,7 @@ from Orange.widgets.utils.overlay import OverlayWidget
 from Orange.widgets.utils.settings import (
     QSettings_readArray, QSettings_writeArray
 )
+
 
 if typing.TYPE_CHECKING:
     # pylint: disable=invalid-name
@@ -1212,12 +1214,13 @@ NA_VALUES = {
 
 def load(paths, option_list, progress_callback=None, compatibility_mode=False):
     # type: (Union[AnyStr, BinaryIO], Options, Optional[Callable[[int, int], None]], bool) -> pd.DataFrame
-        from orangecontrib.example.widgets.elements.elements import Loader
-        loader = Loader()
-        loader.load_imzml(paths[0])
-        loader.load_ibd(paths[1])
-        spectrasum = sum_spectrum(loader.mz_array_list, loader.i_array_list)
-        return pd.DataFrame(loader.im_list), pd.DataFrame(loader.mz_array_list), pd.DataFrame(loader.i_array_list), pd.DataFrame([spectrasum])
+    loader = Loader()
+    loader.load_imzml(paths[0])
+    loader.load_ibd(paths[1])
+    graficos = Graficos(loader.mz_array_list, loader.i_array_list, loader.im_list)
+    with open('graficos.pickle', 'wb') as f:
+        pickle.dump(graficos, f)
+    return pd.DataFrame(loader.im_list), pd.DataFrame(loader.mz_array_list), pd.DataFrame(loader.i_array_list), pd.DataFrame([graficos.spectrasum])
 
 def sum_spectrum(mz_array, i_array):
     total_spectra = dict()
